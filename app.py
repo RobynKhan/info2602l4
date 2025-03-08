@@ -11,117 +11,190 @@ from flask_jwt_extended import (
     current_user,
     set_access_cookies,
     unset_jwt_cookies,
-    current_user,
 )
 
 
 def create_app():
-  app = Flask(__name__, static_url_path='/static')
-  app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-  app.config['TEMPLATES_AUTO_RELOAD'] = True
-  app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(app.root_path, 'data.db')
-  app.config['DEBUG'] = True
-  app.config['SECRET_KEY'] = 'MySecretKey'
-  app.config['PREFERRED_URL_SCHEME'] = 'https'
-  app.config['JWT_ACCESS_COOKIE_NAME'] = 'access_token'
-  app.config['JWT_REFRESH_COOKIE_NAME'] = 'refresh_token'
-  app.config["JWT_TOKEN_LOCATION"] = ["cookies"]
-  app.config["JWT_COOKIE_SECURE"] = True
-  app.config["JWT_SECRET_KEY"] = "super-secret"
-  app.config["JWT_COOKIE_CSRF_PROTECT"] = False
-  db.init_app(app)
-  app.app_context().push()
-  return app
+    app = Flask(__name__, static_url_path='/static')
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    app.config['TEMPLATES_AUTO_RELOAD'] = True
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(app.root_path, 'data.db')
+    app.config['DEBUG'] = True
+    app.config['SECRET_KEY'] = 'MySecretKey'
+    app.config['PREFERRED_URL_SCHEME'] = 'https'
+    app.config['JWT_ACCESS_COOKIE_NAME'] = 'access_token'
+    app.config['JWT_REFRESH_COOKIE_NAME'] = 'refresh_token'
+    app.config["JWT_TOKEN_LOCATION"] = ["cookies"]
+    app.config["JWT_COOKIE_SECURE"] = True
+    app.config["JWT_SECRET_KEY"] = "super-secret"
+    app.config["JWT_COOKIE_CSRF_PROTECT"] = False
+    app.config["JWT_ACCESS_TOKEN_EXPIRES"] = 60 * 60 * 24 * 7  # 1 week
+    db.init_app(app)
+    app.app_context().push()
+    return app
 
 
 app = create_app()
 jwt = JWTManager(app)
 
 
-@jwt.user_identity_loader
-def user_identity_lookup(user):
-  return user.id
-
-
+#tells flask jwt how to pull a user object when the user_id id decoded from a token
 @jwt.user_lookup_loader
 def user_lookup_callback(_jwt_header, jwt_data):
   identity = jwt_data["sub"]
   return User.query.get(identity)
 
-@jwt.expired_token_loader
+#Defines what page to show when token is invalid
+
 @jwt.invalid_token_loader
 def custom_unauthorized_response(error):
     return render_template('401.html', error=error), 401
 
+#Defines what page to show when token is expired
 @jwt.expired_token_loader
 def expired_token_callback(jwt_header, jwt_payload):
-    return render_template('401.html'), 401  
+    return render_template('401.html'), 401 
 
 # custom decorator authorize routes for admin or regular user
 def login_required(required_class):
-
   def wrapper(f):
-
     @wraps(f)
     @jwt_required()  # Ensure JWT authentication
     def decorated_function(*args, **kwargs):
-      user = required_class.query.filter_by(username=get_jwt_identity()).first()
-      print(user.__class__, required_class, user.__class__ == required_class)
+      user = User.query.get(get_jwt_identity())
       if user.__class__ != required_class:  # Check class equality
         return jsonify(message='Invalid user role'), 403
       return f(*args, **kwargs)
-
     return decorated_function
-
   return wrapper
 
-
+#tells flask jwt to encode the user's id in the token
 def login_user(username, password):
   user = User.query.filter_by(username=username).first()
   if user and user.check_password(password):
-    token = create_access_token(identity=user)
+    token = create_access_token(identity=user.id)
     return token
   return None
 
-
 # View Routes
 
-
 @app.route('/', methods=['GET'])
-@app.route('/login', methods=['GET'])
-def login_page():
-  return render_template('login.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login_action():
+    if request.method == 'POST':
+        data = request.form
+        token = login_user(data['username'], data['password'])
+        response = None
+        if token:
+            flash('Logged in successfully.')
+            response = redirect(url_for('todos_page'))
+            set_access_cookies(response, token)
+        else:
+            flash('Invalid username or password')
+            response = redirect(url_for('login_action'))
+        return response
+    return render_template('login.html')  # Just render login page for GET requests
 
 
 @app.route('/app', methods=['GET'])
 @jwt_required()
 def todos_page():
-  return render_template('todo.html', current_user=current_user)
+    todos = Todo.query.filter_by(user_id=current_user.id).all()  # Ensure todos are fetched
+    return render_template('todo.html', current_user=current_user, todos=todos)
 
+@app.route('/signup', methods=['GET', 'POST'])
+def signup_action():
+    if request.method == 'POST':
+        data = request.form  # Get data from form submission
 
-@app.route('/signup', methods=['GET'])
-def signup_page():
-  return render_template('signup.html')
+        # # Validate required fields
+        # if not all(key in data for key in ['username', 'email', 'password']):
+        #     flash('All fields are required!')
+        #     return redirect(url_for('signup_page'))
+
+        newuser = RegularUser(username=data['username'], email=data['email'], password=data['password'])  # Create user object
+        response = None
+        try:
+            db.session.add(newuser)
+            db.session.commit()  # Save user
+            token = login_user(data['username'], data['password'])
+            response = redirect(url_for('todos_page'))
+            set_access_cookies(response, token)
+            flash('Account Created!')
+        except Exception:  # Attempted to insert a duplicate user
+            db.session.rollback()
+            flash("Username or email already exists")
+            response = redirect(url_for('login_action'))
+        return response
+    return render_template('signup.html')  # Render signup page for GET requests
 
 
 @app.route('/editTodo/<id>', methods=["GET"])
 @jwt_required()
 def edit_todo_page(id):
-  todos = Todo.query.all()
-  todo = Todo.query.filter_by(id=id, user_id=current_user.id).first()
+    todo = Todo.query.filter_by(id=id, user_id=current_user.id).first()
 
-  if todo:
-    return render_template('edit.html', todo=todo, current_user=current_user)
+    if todo:
+        return render_template('edit.html', todo=todo, current_user=current_user)
 
-  flash('Todo not found or unauthorized')
+    flash('Todo not found or unauthorized')
+    return redirect(url_for('todos_page'))
+
+@app.route('/editTodo/<id>', methods=["POST"])
+@jwt_required()
+def edit_todo_action(id):
+  data = request.form
+  res = current_user.update_todo(id, data["text"])
+  if res:
+    flash('Todo Updated!')
+  else:
+    flash('Todo not found or unauthorized')
   return redirect(url_for('todos_page'))
 
+@app.route('/createTodo', methods=['POST'])
+@jwt_required()
+def create_todo_action():
+  data = request.form
+  current_user.add_todo(data['text'])
+  flash('Created')
+  return redirect(url_for('todos_page'))
 
+@app.route('/toggle/<id>', methods=['POST'])
+@jwt_required()
+def toggle_todo_action(id):
+  todo = current_user.toggle_todo(id)
+  if todo is None:
+    flash('Invalid id or unauthorized')
+  else:
+    flash(f'Todo { "done" if todo.done else "not done" }!')
+  return redirect(url_for('todos_page'))
+
+@app.route('/deleteTodo/<id>', methods=["GET"])
+@jwt_required()
+def delete_todo_action(id):
+  res = current_user.delete_todo(id)
+  if res == None:
+    flash('Invalid id or unauthorized')
+  else:
+    flash('Todo Deleted')
+  return redirect(url_for('todos_page'))
+
+@app.route('/logout', methods=['GET'])
+@jwt_required()
+def logout_action():
+  flash('Logged Out')
+  response = redirect(url_for('login_action'))
+  unset_jwt_cookies(response)
+  return response
+
+#admin routes  
+@app.route('/admin')
+@login_required(Admin)
+def admin_page():
+  todos = Todo.query.all()
+  return render_template('admin.html', todos=todos)
 # Action Routes
 
-
-
-
-
 if __name__ == "__main__":
-  app.run(host='0.0.0.0', port=81)
+    app.run(host='0.0.0.0', port=8080, debug=True)
