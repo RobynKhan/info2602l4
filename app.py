@@ -11,32 +11,32 @@ from flask_jwt_extended import (
     current_user,
     set_access_cookies,
     unset_jwt_cookies,
+    current_user,
 )
 
 
 def create_app():
-    app = Flask(__name__, static_url_path='/static')
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    app.config['TEMPLATES_AUTO_RELOAD'] = True
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(app.root_path, 'data.db')
-    app.config['DEBUG'] = True
-    app.config['SECRET_KEY'] = 'MySecretKey'
-    app.config['PREFERRED_URL_SCHEME'] = 'https'
-    app.config['JWT_ACCESS_COOKIE_NAME'] = 'access_token'
-    app.config['JWT_REFRESH_COOKIE_NAME'] = 'refresh_token'
-    app.config["JWT_TOKEN_LOCATION"] = ["cookies"]
-    app.config["JWT_COOKIE_SECURE"] = True
-    app.config["JWT_SECRET_KEY"] = "super-secret"
-    app.config["JWT_COOKIE_CSRF_PROTECT"] = False
-    app.config["JWT_ACCESS_TOKEN_EXPIRES"] = 60 * 60 * 24 * 7  # 1 week
-    db.init_app(app)
-    app.app_context().push()
-    return app
+  app = Flask(__name__, static_url_path='/static')
+  app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+  app.config['TEMPLATES_AUTO_RELOAD'] = True
+  app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(app.root_path, 'data.db')
+  app.config['DEBUG'] = True
+  app.config['SECRET_KEY'] = 'MySecretKey'
+  app.config['PREFERRED_URL_SCHEME'] = 'https'
+  app.config['JWT_ACCESS_COOKIE_NAME'] = 'access_token'
+  app.config['JWT_REFRESH_COOKIE_NAME'] = 'refresh_token'
+  app.config["JWT_TOKEN_LOCATION"] = ["cookies"]
+  app.config["JWT_COOKIE_SECURE"] = True
+  app.config["JWT_SECRET_KEY"] = "super-secret"
+  app.config["JWT_COOKIE_CSRF_PROTECT"] = False
+  app.config["JWT_ACCESS_TOKEN_EXPIRES"] = 60 * 60 * 24 * 7  # 1 week
+  db.init_app(app)
+  app.app_context().push()
+  return app
 
 
 app = create_app()
 jwt = JWTManager(app)
-
 
 #tells flask jwt how to pull a user object when the user_id id decoded from a token
 @jwt.user_lookup_loader
@@ -78,79 +78,92 @@ def login_user(username, password):
 
 # View Routes
 
+
 @app.route('/', methods=['GET'])
-
-@app.route('/login', methods=['GET', 'POST'])
-def login_action():
-    if request.method == 'POST':
-        data = request.form
-        token = login_user(data['username'], data['password'])
-        response = None
-        if token:
-            flash('Logged in successfully.')
-            response = redirect(url_for('todos_page'))
-            set_access_cookies(response, token)
-        else:
-            flash('Invalid username or password')
-            response = redirect(url_for('login_action'))
-        return response
-    return render_template('login.html')  # Just render login page for GET requests
+@app.route('/login', methods=['GET'])
+def login_page():
+  return render_template('login.html')
 
 
-@app.route('/app', methods=['GET'])
+@app.route('/app', methods=['GET']) #/app is the url
 @jwt_required()
 def todos_page():
-    todos = Todo.query.filter_by(user_id=current_user.id).all()  # Ensure todos are fetched
-    return render_template('todo.html', current_user=current_user, todos=todos)
+  return render_template('todo.html', current_user=current_user)
 
-@app.route('/signup', methods=['GET', 'POST'])
-def signup_action():
-    if request.method == 'POST':
-        data = request.form  # Get data from form submission
 
-        # # Validate required fields
-        # if not all(key in data for key in ['username', 'email', 'password']):
-        #     flash('All fields are required!')
-        #     return redirect(url_for('signup_page'))
-
-        newuser = RegularUser(username=data['username'], email=data['email'], password=data['password'])  # Create user object
-        response = None
-        try:
-            db.session.add(newuser)
-            db.session.commit()  # Save user
-            token = login_user(data['username'], data['password'])
-            response = redirect(url_for('todos_page'))
-            set_access_cookies(response, token)
-            flash('Account Created!')
-        except Exception:  # Attempted to insert a duplicate user
-            db.session.rollback()
-            flash("Username or email already exists")
-            response = redirect(url_for('login_action'))
-        return response
-    return render_template('signup.html')  # Render signup page for GET requests
+@app.route('/signup', methods=['GET'])
+def signup_page():
+  return render_template('signup.html')
 
 
 @app.route('/editTodo/<id>', methods=["GET"])
 @jwt_required()
 def edit_todo_page(id):
-    todo = Todo.query.filter_by(id=id, user_id=current_user.id).first()
+  todos = Todo.query.all()
+  todo = Todo.query.filter_by(id=id, user_id=current_user.id).first()
 
-    if todo:
-        return render_template('edit.html', todo=todo, current_user=current_user)
+  if todo:
+    return render_template('edit.html', todo=todo, current_user=current_user)
 
-    flash('Todo not found or unauthorized')
-    return redirect(url_for('todos_page'))
-
-@app.route('/editTodo/<id>', methods=["POST"])
-@jwt_required()
-def edit_todo_action(id):
-  data = request.form
-  res = current_user.update_todo(id, data["text"])
-  if res:
-    flash('Todo Updated!')
-  else:
-    flash('Todo not found or unauthorized')
+  flash('Todo not found or unauthorized')
   return redirect(url_for('todos_page'))
+
+@app.route('/admin')
+@login_required(Admin)
+def admin_page():
+  page = request.args.get('page', 1, type=int)
+  q = request.args.get('q', default='', type=str)
+  done = request.args.get('done', default='any', type=str)
+  todos = current_user.search_todos(q, done, page)
+  return render_template('admin.html', todos=todos, q=q, page=page, done=done)
+
+@app.route('/todo-stats', methods=["GET"])
+@login_required(Admin)
+def todo_stats():
+  return jsonify(current_user.get_todo_stats())
+
+@app.route('/stats')
+@login_required(Admin)
+def stats_page():
+  return render_template('stats.html')
+
+# Action Routes
+@app.route('/signup', methods=['POST'])
+def signup_action():
+  data = request.form  # get data from form submission
+  newuser = RegularUser(username=data['username'], email=data['email'], password=data['password'])  # create user object
+  response = None
+  try:
+    db.session.add(newuser)
+    db.session.commit()  # save user
+    token = login_user(data['username'], data['password'])
+    response = redirect(url_for('todos_page'))
+    set_access_cookies(response, token)
+    flash('Account Created!')  # send message
+  except Exception:  # attempted to insert a duplicate user
+    db.session.rollback()
+    flash("username or email already exists")  # error message
+    response = redirect(url_for('login_page'))
+  return response
+
+@app.route('/login', methods=['POST'])
+def login_action():
+  data = request.form
+  token = login_user(data['username'], data['password'])
+  print(token)
+  response = None
+  user = User.query.filter_by(username=data['username']).first()
+  if token:
+    flash('Logged in successfully.')  # send message to next page
+    if user.type == "regular user":
+      response = redirect(url_for('todos_page'))
+    else :
+      response = redirect(url_for('admin_page'))  # redirect to main page if login successful
+    set_access_cookies(response, token)
+  else:
+    flash('Invalid username or password')  # send message to next page
+    response = redirect(url_for('login_page'))
+  return response
 
 @app.route('/createTodo', methods=['POST'])
 @jwt_required()
@@ -170,6 +183,17 @@ def toggle_todo_action(id):
     flash(f'Todo { "done" if todo.done else "not done" }!')
   return redirect(url_for('todos_page'))
 
+@app.route('/editTodo/<id>', methods=["POST"])
+@jwt_required()
+def edit_todo_action(id):
+  data = request.form
+  res = current_user.update_todo(id, data["text"])
+  if res:
+    flash('Todo Updated!')
+  else:
+    flash('Todo not found or unauthorized')
+  return redirect(url_for('todos_page'))
+
 @app.route('/deleteTodo/<id>', methods=["GET"])
 @jwt_required()
 def delete_todo_action(id):
@@ -184,17 +208,9 @@ def delete_todo_action(id):
 @jwt_required()
 def logout_action():
   flash('Logged Out')
-  response = redirect(url_for('login_action'))
+  response = redirect(url_for('login_page'))
   unset_jwt_cookies(response)
   return response
 
-#admin routes  
-@app.route('/admin')
-@login_required(Admin)
-def admin_page():
-  todos = Todo.query.all()
-  return render_template('admin.html', todos=todos)
-# Action Routes
-
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=8080, debug=True)
+  app.run(host='0.0.0.0', port=81)
